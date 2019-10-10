@@ -1,25 +1,17 @@
-package inventories
+package metadata
 
 import (
 	"fmt"
 	"time"
 
-	"github.com/DataDog/datadog-agent/pkg/util"
+	"github.com/DataDog/datadog-agent/pkg/collector/check"
 
 	"github.com/DataDog/datadog-agent/pkg/autodiscovery/integration"
-	"github.com/DataDog/datadog-agent/pkg/collector/check"
-	"github.com/DataDog/datadog-agent/pkg/metadata"
+
+	"github.com/DataDog/datadog-agent/pkg/metadata/inventories"
+
 	"github.com/DataDog/datadog-agent/pkg/serializer"
-)
-
-var (
-	metadataUpdatedC = make(chan interface{})
-)
-
-var (
-	// For testing purposes
-	timeNow   = time.Now
-	timeSince = time.Since
+	"github.com/DataDog/datadog-agent/pkg/util"
 )
 
 const (
@@ -41,21 +33,19 @@ type collectorInterface interface {
 }
 
 type inventoriesCollector struct {
-	ac       autoConfigInterface
-	coll     collectorInterface
-	lastSend time.Time
+	ac   autoConfigInterface
+	coll collectorInterface
+	sc   schedulerInterface
 }
 
 // Send collects the data needed and submits the payload
 func (c inventoriesCollector) Send(s *serializer.Serializer) error {
-	c.lastSend = timeNow()
-
 	hostname, err := util.GetHostname()
 	if err != nil {
 		return fmt.Errorf("unable to submit inventories metadata payload, no hostname: %s", err)
 	}
 
-	payload := GetPayload(hostname, c.ac, c.coll)
+	payload := inventories.GetPayload(hostname, c.ac, c.coll)
 
 	if err := s.SendMetadata(payload); err != nil {
 		return fmt.Errorf("unable to submit inventories payload, %s", err)
@@ -63,30 +53,23 @@ func (c inventoriesCollector) Send(s *serializer.Serializer) error {
 	return nil
 }
 
-// Setup registers the inventories collector into the Scheduler and, if configured, schedules it
-func Setup(sc schedulerInterface, ac autoConfigInterface, coll collectorInterface) error {
+// Send collects the data needed and submits the payload
+func (c inventoriesCollector) Init() error {
+	return inventories.StartSendNowRoutine(c.sc, minSendInterval)
+}
+
+// SetupInventories registers the inventories collector into the Scheduler and, if configured, schedules it
+func SetupInventories(sc schedulerInterface, ac autoConfigInterface, coll collectorInterface) error {
 	ic := inventoriesCollector{
-		ac:       ac,
-		coll:     coll,
-		lastSend: timeNow(),
+		ac:   ac,
+		coll: coll,
+		sc:   sc,
 	}
-	metadata.RegisterCollector("inventories", ic)
+	RegisterCollector("inventories", ic)
 
 	if err := sc.AddCollector("inventories", maxSendInterval); err != nil {
 		return err
 	}
-
-	// This listens to the metadataUpdatedC signal to run the collector out of its regular interval
-	go func() {
-		for {
-			<-metadataUpdatedC
-			delay := minSendInterval - timeSince(ic.lastSend)
-			if delay < 0 {
-				delay = 0
-			}
-			sc.SendNow("inventories", delay)
-		}
-	}()
 
 	return nil
 }
